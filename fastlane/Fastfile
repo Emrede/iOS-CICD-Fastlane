@@ -1,0 +1,161 @@
+default_platform(:ios)
+desc "Build IPA"
+lane :build_ipa do |options|
+
+	default_keychain = options[:default_keychain] || false
+    provisioning_profile_path = File.absolute_path("Certificates/#{ENV["#{options[:environment]}_PROVISIONING_FILE"]}")
+	prepare_target_environment(default_keychain, provisioning_profile_path)
+
+	increment_version_number_in_xcodeproj(bump_type: "patch", target: ENV["#{options[:environment]}_SCHEME"])
+	build_number_new = fetch_build_number(ENV["#{options[:environment]}_APP_NAME"]).to_i + 1
+	sh(command: "echo #{build_number_new.to_i}")
+	increment_build_number(build_number: "#{build_number_new}")
+
+	gym(scheme: ENV["#{options[:environment]}_SCHEME"],
+		workspace: ENV["PROJECTWORKSPACE"],
+		export_xcargs: "-allowProvisioningUpdates",
+		export_method: ENV["EXPORT_METHOD"],
+		export_options: {
+			signingStyle: "manual",
+			provisioningProfiles: {
+				ENV["#{options[:environment]}_BUNDLE_ID"] => ENV["#{options[:environment]}_PROVISIONING_FILE"]
+			}
+		},
+		clean: true,
+		verbose: false,
+		output_directory: ENV["OUTPUT_DIRECTORY"], 
+		output_name: ENV["#{options[:environment]}_OUTPUT_NAME"]
+		)
+end
+
+desc "Publish to Appcenter"
+lane :publish_to_appcenter do |options|
+	destinations = ENV["DESTINATION"]
+    notifyTesters = true
+	if options[:environment] == 'DEV'
+        destinations = ENV["DEV_DESTINATION"]
+        notifyTesters = false
+	end
+
+	changelog_from_git_commits(
+        date_format: "short",
+        pretty: "- %s",
+        commits_count: 10,			
+        merge_commit_filtering: "exclude_merges"
+	)
+
+	change_log = lane_context[SharedValues::FL_CHANGELOG]
+
+	appcenter_upload(api_token: $APPCENTER_API_TOKEN,
+		owner_name: ENV["OWNER_NAME"],
+		owner_type: ENV["OWNER_TYPE"],
+		app_name: ENV["#{options[:environment]}_APP_NAME"],
+		# file: "#{ENV["OUTPUT_DIRECTORY"]}/#{ENV["#{options[:environment]}_OUTPUT_NAME"]}",
+		destinations: destinations,
+		release_notes: change_log,
+		notify_testers: notifyTesters
+	)
+end
+
+desc "Release"
+lane :release do |options|
+	build_ipa(environment: options[:environment], default_keychain: options[:default_keychain])
+  	publish_to_appcenter(environment: options[:environment])
+end
+
+
+def prepare_target_environment(default_keychain, provisioning_profile_path)
+
+	keychain_name = ENV["KEYCHAIN_NAME"]
+	keychain_password = ENV["KEYCHAIN_PASSWORD"]
+
+	create_temp_keychain(keychain_name, keychain_password, default_keychain)
+
+	install_provisioning_profile(path: provisioning_profile_path)
+    
+	import_certificates(keychain_name, keychain_password)
+
+end
+
+def create_temp_keychain(keychain_name, keychain_password, default_keychain)
+	delete_keychain(
+		name: keychain_name
+		) if File.exist? File.expand_path("~/Library/Keychains/#{keychain_name}-db")
+	create_keychain(
+		name: keychain_name,
+		password: keychain_password,
+		default_keychain: default_keychain,
+		unlock: true,
+		timeout: 0,
+		add_to_search_list: true,
+		lock_when_sleeps: false,
+		verbose: true
+		)
+end
+
+def import_certificates(keychain_name, keychain_password)
+	import_certificate(
+		certificate_path: File.absolute_path("Certificates/AppleiPhoneCertificationAuthority.cer"),
+		keychain_name: keychain_name,
+		keychain_password: keychain_password
+		)
+	import_certificate(
+		certificate_path: File.absolute_path("Certificates/AppleiPhoneOSProvisioningProfileSigning.cer"),
+		keychain_name: keychain_name,
+		keychain_password: keychain_password
+		)
+	import_certificate(
+		certificate_path: File.absolute_path("Certificates/AppleWorldwideDeveloperRelationsCertificationAuthority.cer"),
+		keychain_name: keychain_name,
+		keychain_password: keychain_password
+		)
+	import_certificate(
+		certificate_path: File.absolute_path("Certificates/DeveloperIDCertificationAuthority.cer"),
+		keychain_name: keychain_name,
+		keychain_password: keychain_password
+		)
+	import_certificate(
+		certificate_path: File.absolute_path("Certificates/DistCert.cer"),
+		keychain_name: keychain_name,
+		keychain_password: keychain_password
+		)
+
+	import_certificate(
+		certificate_path: File.absolute_path("Certificates/DistCert.p12"),
+		certificate_password: ENV["CERTIFICATE_PASSWORD_ENV"],
+		keychain_name: keychain_name,
+		keychain_password: keychain_password
+		)
+end
+
+desc "Pod Install"
+lane :run_pod_install do
+	cocoapods(
+		clean_install: true
+		)
+end
+
+desc "Run Tests"
+lane :run_tests_with_scheme do |options|
+	scheme = options[:scheme]
+	run_tests(workspace: ENV["PROJECTWORKSPACE"],
+		scheme: scheme
+		)
+end
+
+def fetch_build_number(appName)
+	value = appcenter_fetch_version_number(
+	  api_token: $APPCENTER_API_TOKEN,
+	  owner_name: ENV["OWNER_NAME"],
+	  app_name: appName
+	)
+	value_build_number = value["build_number"]
+	if value["build_number"].nil?
+	  value_build_number = '0.0.1'
+	end
+	sh(command: "echo #{value_build_number}")
+	value_build_number
+	rescue => ex
+	  value_build_number = '1'
+	  value_build_number
+end

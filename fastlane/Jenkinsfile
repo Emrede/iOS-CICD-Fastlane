@@ -1,0 +1,73 @@
+    pipeline {
+    agent none
+    
+    environment {
+        RUBY_VERSION = '3.0.0'
+        PATH = "~/.rbenv/versions/${RUBY_VERSION}/bin:${PATH}:/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.fastlane/bin:$PATH:~/.gem/ruby/${RUBY_VERSION}/bin:/usr/local/Cellar"
+        DEVELOPER_DIR = '/Applications/Xcode_13.app/Contents/Developer'
+        APPCENTER_API_TOKEN = credentials('app-center-api-token-ios')
+        CERTIFICATE_PASSWORD = credentials('app-certificate-password')
+    }
+
+    stages {
+
+        // Dependency Installation
+        stage('Install All Dependencies') {
+            steps {
+                sh 'rbenv install ${RUBY_VERSION}'
+                sh 'gem install bundler:2.2.22'
+                sh 'gem install xcode-install'
+                sh 'bundle install'
+                sh 'cp -f hr-app-infra/jenkins/ios/.env fastlane/.env'
+                sh 'cp -f hr-app-infra/jenkins/ios/Fastfile fastlane/Fastfile'
+            }
+        }
+
+        // Environment Setup
+        stage('Run Pod Install') { 
+            steps { 
+                sh 'bundle exec fastlane run_pod_install'
+            }
+        }
+
+        stage('Run UI&Unit Tests') { 
+            steps { 
+                sh 'bundle exec fastlane run_tests_with_scheme scheme:"Development"'
+            }
+        }
+
+
+        // Development Stage // Publish Development Appcenter
+
+        stage('Release Development') { 
+            when {
+                branch "development"
+            }
+            steps { 
+                sh "bundle exec fastlane release environment:DEV default_keychain:true"
+            }
+        }
+
+        // QA Stage
+
+        stage('Release QA') { 
+            when {
+                branch "release"
+            }
+            steps { 
+                sh 'bundle exec fastlane release environment:QA default_keychain:true'
+            }
+        }
+
+        // Production Stage
+
+        stage('Release Production') { 
+            when {
+                branch "production"
+            }
+            steps { 
+                sh 'bundle exec fastlane release environment:PROD default_keychain:true'
+            }
+        }
+    }
+}
